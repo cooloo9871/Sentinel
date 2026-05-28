@@ -1,0 +1,276 @@
+package k8s
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/dynamic"
+	"sigs.k8s.io/yaml"
+
+	"github.com/brobridge/sentinel/internal/policy"
+)
+
+// PolicyRecord is a policy as returned by the list/get API.
+type PolicyRecord struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace,omitempty"`
+	Scope     string `json:"scope"` // "cluster" or "namespaced"
+	CreatedAt string `json:"createdAt"`
+	RawYAML   string `json:"rawYaml"`
+}
+
+// Store manages TracingPolicy and TracingPolicyNamespaced CRDs.
+type Store struct {
+	client dynamic.Interface
+}
+
+// NewStore creates a Store wrapping the given dynamic client.
+func NewStore(client dynamic.Interface) *Store {
+	return &Store{client: client}
+}
+
+// List returns all cluster-wide and namespaced policies.
+func (s *Store) List(ctx context.Context) ([]PolicyRecord, error) {
+	var records []PolicyRecord
+
+	clusterList, err := s.client.Resource(tracingPolicyGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list TracingPolicy: %w", err)
+	}
+	for _, item := range clusterList.Items {
+		r, err := toRecord(item, "cluster")
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, r)
+	}
+
+	nsList, err := s.client.Resource(tracingPolicyNamespacedGVR).Namespace("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list TracingPolicyNamespaced: %w", err)
+	}
+	for _, item := range nsList.Items {
+		r, err := toRecord(item, "namespaced")
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, r)
+	}
+
+	return records, nil
+}
+
+// Get returns a single policy by name and optional namespace.
+func (s *Store) Get(ctx context.Context, name, namespace string) (PolicyRecord, error) {
+	var item *unstructured.Unstructured
+	var err error
+	scope := "cluster"
+
+	if namespace != "" {
+		scope = "namespaced"
+		item, err = s.client.Resource(tracingPolicyNamespacedGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+	} else {
+		item, err = s.client.Resource(tracingPolicyGVR).Get(ctx, name, metav1.GetOptions{})
+	}
+	if err != nil {
+		return PolicyRecord{}, fmt.Errorf("get policy %q: %w", name, err)
+	}
+	return toRecord(*item, scope)
+}
+
+// Apply creates or updates a policy from a TracingPolicy struct.
+func (s *Store) Apply(ctx context.Context, tp policy.TracingPolicy) error {
+	data, err := json.Marshal(tp)
+	if err != nil {
+		return fmt.Errorf("marshal policy: %w", err)
+	}
+	obj := &unstructured.Unstructured{}
+	if err := json.Unmarshal(data, &obj.Object); err != nil {
+		return fmt.Errorf("unmarshal to unstructured: %w", err)
+	}
+
+	name := tp.Metadata.Name
+	ns := tp.Metadata.Namespace
+
+	if ns != "" {
+		return s.applyNamespaced(ctx, ns, name, obj)
+	}
+	return s.applyCluster(ctx, name, obj)
+}
+
+// ApplyRaw applies a raw YAML string to the cluster, detecting scope from the namespace field.
+func (s *Store) ApplyRaw(ctx context.Context, rawYAML string) error {
+	jsonBytes, err := yaml.YAMLToJSON([]byte(rawYAML))
+	if err != nil {
+		return fmt.Errorf("invalid YAML: %w", err)
+	}
+	obj := &unstructured.Unstructured{}
+	if err := json.Unmarshal(jsonBytes, &obj.Object); err != nil {
+		return fmt.Errorf("unmarshal YAML: %w", err)
+	}
+
+	name := obj.GetName()
+	ns := obj.GetNamespace()
+
+	if ns != "" {
+		return s.applyNamespaced(ctx, ns, name, obj)
+	}
+	return s.applyCluster(ctx, name, obj)
+}
+
+// Delete removes a policy by name and optional namespace.
+func (s *Store) Delete(ctx context.Context, name, namespace string) error {
+	var err error
+	if namespace != "" {
+		err = s.client.Resource(tracingPolicyNamespacedGVR).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	} else {
+		err = s.client.Resource(tracingPolicyGVR).Delete(ctx, name, metav1.DeleteOptions{})
+	}
+	if err != nil {
+		return fmt.Errorf("delete policy %q: %w", name, err)
+	}
+	return nil
+}
+
+// ListNamespaces returns all namespace names in the cluster.
+func (s *Store) ListNamespaces(ctx context.Context) ([]string, error) {
+	list, err := s.client.Resource(namespaceGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list namespaces: %w", err)
+	}
+	names := make([]string, 0, len(list.Items))
+	for _, item := range list.Items {
+		names = append(names, item.GetName())
+	}
+	return names, nil
+}
+
+// GetMode scans all policies and returns "Monitoring", "Protect", or "Mixed".
+func (s *Store) GetMode(ctx context.Context) (string, error) {
+	records, err := s.List(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(records) == 0 {
+		return "Monitoring", nil
+	}
+
+	postCount, killCount := 0, 0
+	for _, r := range records {
+		var tp policy.TracingPolicy
+		if err := yaml.Unmarshal([]byte(r.RawYAML), &tp); err != nil {
+			continue
+		}
+		for _, kp := range tp.Spec.KProbes {
+			for _, sel := range kp.Selectors {
+				for _, act := range sel.MatchActions {
+					switch act.Action {
+					case policy.ActionPost:
+						postCount++
+					case policy.ActionSigkill:
+						killCount++
+					}
+				}
+			}
+		}
+	}
+
+	if killCount == 0 {
+		return "Monitoring", nil
+	}
+	if postCount == 0 {
+		return "Protect", nil
+	}
+	return "Mixed", nil
+}
+
+// SetMode updates all policies to use either "Post" (Monitoring) or "Sigkill" (Protect).
+func (s *Store) SetMode(ctx context.Context, mode string) error {
+	action := policy.ActionPost
+	if mode == "Protect" {
+		action = policy.ActionSigkill
+	}
+
+	records, err := s.List(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, r := range records {
+		var tp policy.TracingPolicy
+		if err := yaml.Unmarshal([]byte(r.RawYAML), &tp); err != nil {
+			return fmt.Errorf("parse policy %q: %w", r.Name, err)
+		}
+		for i := range tp.Spec.KProbes {
+			for j := range tp.Spec.KProbes[i].Selectors {
+				for k := range tp.Spec.KProbes[i].Selectors[j].MatchActions {
+					tp.Spec.KProbes[i].Selectors[j].MatchActions[k].Action = action
+				}
+			}
+		}
+		if err := s.Apply(ctx, tp); err != nil {
+			return fmt.Errorf("apply policy %q: %w", r.Name, err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) applyCluster(ctx context.Context, name string, obj *unstructured.Unstructured) error {
+	_, err := s.client.Resource(tracingPolicyGVR).Create(ctx, obj, metav1.CreateOptions{})
+	if err == nil {
+		return nil
+	}
+	if !k8serrors.IsAlreadyExists(err) {
+		return err
+	}
+	existing, err := s.client.Resource(tracingPolicyGVR).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	obj.SetResourceVersion(existing.GetResourceVersion())
+	_, err = s.client.Resource(tracingPolicyGVR).Update(ctx, obj, metav1.UpdateOptions{})
+	return err
+}
+
+func (s *Store) applyNamespaced(ctx context.Context, ns, name string, obj *unstructured.Unstructured) error {
+	_, err := s.client.Resource(tracingPolicyNamespacedGVR).Namespace(ns).Create(ctx, obj, metav1.CreateOptions{})
+	if err == nil {
+		return nil
+	}
+	if !k8serrors.IsAlreadyExists(err) {
+		return err
+	}
+	existing, err := s.client.Resource(tracingPolicyNamespacedGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	obj.SetResourceVersion(existing.GetResourceVersion())
+	_, err = s.client.Resource(tracingPolicyNamespacedGVR).Namespace(ns).Update(ctx, obj, metav1.UpdateOptions{})
+	return err
+}
+
+func toRecord(item unstructured.Unstructured, scope string) (PolicyRecord, error) {
+	rawJSON, err := json.Marshal(item.Object)
+	if err != nil {
+		return PolicyRecord{}, err
+	}
+	rawYAML, err := yaml.JSONToYAML(rawJSON)
+	if err != nil {
+		return PolicyRecord{}, err
+	}
+	createdAt := ""
+	if ts := item.GetCreationTimestamp(); !ts.IsZero() {
+		createdAt = ts.UTC().Format("2006-01-02T15:04:05Z")
+	}
+	return PolicyRecord{
+		Name:      item.GetName(),
+		Namespace: item.GetNamespace(),
+		Scope:     scope,
+		CreatedAt: createdAt,
+		RawYAML:   string(rawYAML),
+	}, nil
+}
