@@ -10,7 +10,7 @@ func listNamespaces(store *k8s.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		names, err := store.ListNamespaces(r.Context())
 		if err != nil {
-			http.Error(w, `{"error":"failed to list namespaces"}`, http.StatusInternalServerError)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list namespaces"})
 			return
 		}
 		if names == nil {

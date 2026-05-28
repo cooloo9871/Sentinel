@@ -22,7 +22,7 @@ func listPolicies(store *k8s.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		records, err := store.List(r.Context())
 		if err != nil {
-			http.Error(w, `{"error":"failed to list policies"}`, http.StatusInternalServerError)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list policies"})
 			return
 		}
 		if records == nil {
@@ -39,7 +39,7 @@ func getPolicy(store *k8s.Store) http.HandlerFunc {
 
 		record, err := store.Get(r.Context(), name, namespace)
 		if err != nil {
-			http.Error(w, `{"error":"policy not found"}`, http.StatusNotFound)
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "policy not found"})
 			return
 		}
 		writeJSON(w, http.StatusOK, record)
@@ -50,7 +50,7 @@ func createPolicy(store *k8s.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req createPolicyRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request"})
 			return
 		}
 
@@ -64,7 +64,7 @@ func createPolicy(store *k8s.Store) http.HandlerFunc {
 		}
 
 		if req.Form == nil {
-			http.Error(w, `{"error":"form required"}`, http.StatusBadRequest)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "form required"})
 			return
 		}
 		action := req.Action
@@ -77,7 +77,7 @@ func createPolicy(store *k8s.Store) http.HandlerFunc {
 			return
 		}
 		if err := store.Apply(r.Context(), tp); err != nil {
-			http.Error(w, `{"error":"failed to apply policy"}`, http.StatusInternalServerError)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to apply policy"})
 			return
 		}
 		writeJSON(w, http.StatusCreated, map[string]string{"status": "created"})
@@ -88,7 +88,7 @@ func updatePolicy(store *k8s.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req createPolicyRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request"})
 			return
 		}
 
@@ -102,7 +102,7 @@ func updatePolicy(store *k8s.Store) http.HandlerFunc {
 		}
 
 		if req.Form == nil {
-			http.Error(w, `{"error":"form required"}`, http.StatusBadRequest)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "form required"})
 			return
 		}
 		action := req.Action
@@ -115,7 +115,7 @@ func updatePolicy(store *k8s.Store) http.HandlerFunc {
 			return
 		}
 		if err := store.Apply(r.Context(), tp); err != nil {
-			http.Error(w, `{"error":"failed to apply policy"}`, http.StatusInternalServerError)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to apply policy"})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
@@ -128,7 +128,7 @@ func deletePolicy(store *k8s.Store) http.HandlerFunc {
 		namespace := r.URL.Query().Get("namespace")
 
 		if err := store.Delete(r.Context(), name, namespace); err != nil {
-			http.Error(w, `{"error":"failed to delete policy"}`, http.StatusInternalServerError)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete policy"})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -141,7 +141,7 @@ func previewPolicy(w http.ResponseWriter, r *http.Request) {
 		Action string                 `json:"action"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request"})
 		return
 	}
 	action := req.Action
@@ -155,7 +155,7 @@ func previewPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	b, err := yaml.Marshal(tp)
 	if err != nil {
-		http.Error(w, `{"error":"marshal failed"}`, http.StatusInternalServerError)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "marshal failed"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"yaml": string(b)})

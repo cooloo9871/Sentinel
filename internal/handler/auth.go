@@ -16,25 +16,29 @@ func loginHandler(cfg Config) http.HandlerFunc {
 			Password string `json:"password"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request"})
 			return
 		}
 
 		creds, err := k8sclient.GetCredentials(r.Context(), cfg.DynClient, cfg.Namespace)
 		if err != nil {
-			http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 			return
 		}
 
 		hash, ok := creds[req.Username]
-		if !ok || auth.VerifyPassword(req.Password, hash) != nil {
-			http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
+		if !ok {
+			// Run bcrypt against a dummy hash to prevent timing-based username enumeration.
+			hash = "$2a$10$YzJDJjIwMjYwNTI4aGFzaGVzaGVzAAAAAAAAAAAAAAAAAAAAAAAAAA"
+		}
+		if auth.VerifyPassword(req.Password, hash) != nil || !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 			return
 		}
 
 		token, err := auth.GenerateToken(req.Username, cfg.JWTSecret, cfg.TokenTTL)
 		if err != nil {
-			http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 			return
 		}
 
@@ -42,6 +46,7 @@ func loginHandler(cfg Config) http.HandlerFunc {
 			Name:     "sentinel_token",
 			Value:    token,
 			HttpOnly: true,
+			Secure:   true,
 			Path:     "/",
 			SameSite: http.SameSiteStrictMode,
 			MaxAge:   int(cfg.TokenTTL / time.Second),
