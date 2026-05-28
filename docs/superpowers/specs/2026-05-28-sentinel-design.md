@@ -76,12 +76,12 @@ POST /api/auth/logout
 
 **Policy 管理**
 ```
-GET    /api/policies            # 列出所有 policies（cluster + namespaced）
-POST   /api/policies            # 建立 policy
-GET    /api/policies/:name      # 取得單一 policy
-PUT    /api/policies/:name      # 更新 policy
-DELETE /api/policies/:name      # 刪除 policy
-GET    /api/namespaces          # 列出可用 namespace
+GET    /api/policies                              # 列出所有 policies（cluster + namespaced）
+POST   /api/policies                              # 建立 policy
+GET    /api/policies/:name?namespace=<ns>         # 取得單一 policy（cluster-wide 時省略 namespace）
+PUT    /api/policies/:name?namespace=<ns>         # 更新 policy
+DELETE /api/policies/:name?namespace=<ns>         # 刪除 policy
+GET    /api/namespaces                            # 列出可用 namespace
 ```
 
 **模式切換**
@@ -89,6 +89,8 @@ GET    /api/namespaces          # 列出可用 namespace
 GET    /api/mode                # 取得目前模式
 PUT    /api/mode                # 切換模式（批次更新所有 policy 的 action）
 ```
+
+模式判斷邏輯：`GET /api/mode` 掃描所有 policy 的 action，若全部為 `Post` 回傳 `Monitoring`，若全部為 `Sigkill` 回傳 `Protect`，若混合則回傳 `Mixed`（前端顯示警告，建議重新套用模式）。
 
 ---
 
