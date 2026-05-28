@@ -16,8 +16,8 @@ spec:
       serviceAccountName: sentinel
       containers:
         - name: sentinel
-          image: sentinel:latest
-          imagePullPolicy: IfNotPresent
+          image: quay.io/cooloo9871/sentinel:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
           env:
