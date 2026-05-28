@@ -46,9 +46,8 @@ func loginHandler(cfg Config) http.HandlerFunc {
 			Name:     "sentinel_token",
 			Value:    token,
 			HttpOnly: true,
-			Secure:   true,
 			Path:     "/",
-			SameSite: http.SameSiteStrictMode,
+			SameSite: http.SameSiteLaxMode,
 			MaxAge:   int(cfg.TokenTTL / time.Second),
 		})
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
